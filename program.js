@@ -400,7 +400,16 @@ function main() {
 
   server.on('message', (msg, rinfo) => {
     // logger.info(`UDP.Server message. From: ${rinfo.address}:${rinfo.port}, Message:`, msg);
+
+    // When we recive a message we are storing it into a FIFO buffer.
+    // When the CAS BACnet Stack tick function is called. it will call the CallbackRecvMessage function.
+    // In this function we will read the message from the FIFO buffer and pass it to the CAS BACnet Stack.
     fifoRecvBuffer.push([msg, rinfo.address + ':' + rinfo.port]);
+
+    // Note: If the fifoRecvBuffer ever gets too big you may wish to trim it or call BACnetStack_Tick more frequently.
+
+    // No need to wait for the tick function to be called. We can call it now.
+    CASBACnetStack.stack.BACnetStack_Tick();
   });
 
   server.on('listening', () => {
@@ -460,8 +469,9 @@ function main() {
   // It will process the BACnet stack and send out any messages.
   // Run any timers, do any retransmits, etc.
   setInterval(() => {
-    CASBACnetStack.stack.BACnetStack_Tick();
-    intervalCount += 1;
+    while (CASBACnetStack.stack.BACnetStack_Tick()) {
+      intervalCount += 1;
+    }
   }, 100);
 
 

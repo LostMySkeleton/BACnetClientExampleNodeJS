@@ -10,18 +10,21 @@ In this example, the application will do the following every 30 seconds;
 
 ## Installation
 
-1. Place `CASBACnetStack_x64_Debug.dll` into `REPO_DIR/bin/`
+1. Place `CASBACnetStack_x64_Debug.dll` into `bin/`
 2. (optional) Set network settings, if left empty the program will get your system's active network configuration
 
 ```js
 // Settings
 const SETTING_BACNET_PORT = 47808;  // Default BACnet IP UDP Port.
-const SETTING_DEFAULT_GATEWAY = []; // Set Default Gateway to use for BACnet (i.e. [192, 168, 1, 3])
 const SETTING_IP_ADDRESS = [];      // Set IP Address to use for BACnet (i.e. [192, 168, 1, 3])
 const SETTING_SUBNET_MASK = [];     // Set Subnet Mask to use for BACnet (i.e. [255, 255, 255, 0])
 ```
 
-1. Run the following
+3. Install NodeJS if its not already installed.
+
+[Install NodeJS](https://nodejs.dev/en/learn/how-to-install-nodejs/)
+
+4. Run the following
 
 ```bash
 

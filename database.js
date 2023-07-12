@@ -1,7 +1,13 @@
+/**
+ * This is a simple database that stores the devices, properties, and requests
+ * - The device table is filled in from I-AM responses from Who-Is requests
+ * - The property table is filled in from Read-Property responses from Read-Property-All requests
+ * - The request table contains a list of outstanding Read-Property-All requests that have not been responded to yet.
+ */
+
 const seperator = "/";
 
 module.exports = {
-  
 
   database: {
     'devices': [],
@@ -9,8 +15,11 @@ module.exports = {
     'requests': []
   },
 
+  // Prints the database to a string and returns it
+  // Useful for debugging
   Print() {
-    var ret = "\n\nDatabase: \n";
+    var ret = "\n\n";
+    ret += "Database: \n";
     // Loop thought the list of devices printing each one
     for (var device in this.database.devices) {
       ret += '  Device: ' + device + '\n';
@@ -36,35 +45,32 @@ module.exports = {
     return ret + "\n";
   },
 
-  
 
+  // When a new device is found, add it to the database
+  // If the device is already in the database, update it with the new information
   AddDevice(deviceInstance, vendorId, destinationNetwork, destinationAddress, connectionString) {
-    // Add or update the device in the database by deviceInstance
-
     // If the device is not in the database, add it
     if (this.database.devices[deviceInstance] == null) {
-      this.database.devices[deviceInstance] = {
-        connectionString: connectionString,
-        vendorId: vendorId,
-        destinationNetwork: destinationNetwork,
-        destinationAddress: destinationAddress
-      };
-    }
-    // If the device is in the database, update it
-    else {
-      this.database.devices[deviceInstance].connectionString = connectionString;
-      this.database.devices[deviceInstance].vendorId = vendorId;
-      this.database.devices[deviceInstance].destinationNetwork = destinationNetwork;
-      this.database.devices[deviceInstance].destinationAddress = destinationAddress;
-    }
+      this.database.devices[deviceInstance] = {};
+    };
+
+    // Update the database 
+    this.database.devices[deviceInstance].connectionString = connectionString;
+    this.database.devices[deviceInstance].vendorId = vendorId;
+    this.database.devices[deviceInstance].destinationNetwork = destinationNetwork;
+    this.database.devices[deviceInstance].destinationAddress = destinationAddress;
   },
 
+  // Update the database with a new property
+  // A key is created from the connectionString, device instance, object type, object instance, and property identifier
   AddObjectProperty(deviceInstance, objectType, objectInstance, propertyIdentifier, propertyValueText, destinationNetwork, destinationAddress, connectionString) {
-    
-    var networkKey = destinationNetwork + seperator + deviceInstance + seperator + objectType + seperator + objectInstance + seperator + propertyIdentifier;
+
+    var networkKey = connectionString + seperator + destinationNetwork + seperator + deviceInstance + seperator + objectType + seperator + objectInstance + seperator + propertyIdentifier;
     this.database.properties[networkKey] = propertyValueText;
   },
 
+  // Find the request in the database and return it
+  // If deleteRequest is true, delete the request from the database
   FindOriginalRequest(connectionString, originalInvokeId, deleteRequest) {
     // Use the connection string and original invoke id as a key to the request
     var key = connectionString + seperator + originalInvokeId;
@@ -78,6 +84,7 @@ module.exports = {
     return request;
   },
 
+  // Add a new request to the database
   AddNewRequest(connectionString, originalInvokeId, destinationNetwork, destinationAddress, deviceInstance, objectType, objectInstance) {
     // Use the connection string and original invoke id as a key to the request
     var key = connectionString + seperator + originalInvokeId;

@@ -3,7 +3,7 @@
 // Start with the "function main()"
 //
 // Written by: Steven Smethurst
-// Last updated: 
+// Last updated: 2023-July-11
 //
 
 var CASBACnetStack = require('./CASBACnetStackAdapter'); // CAS BACnet stack
@@ -14,28 +14,30 @@ var dequeue = require('dequeue'); // Creates a FIFO buffer. https://github.com/l
 const dgram = require('dgram'); // UDP server
 const os = require('os'); // Retrieve network info
 
-
 // Logger
 const loggerObj = require('./logging');
 const logger = loggerObj.child({ label: 'BACnetClientExample' });
 
 // Settings
 const SETTING_BACNET_PORT = 47808; // Default BACnet IP UDP Port.
-const SETTING_DEVICE_INSTANCE = 389005; // 
-const SETTING_IP_ADDRESS = []; // Set IP Address to use for BACnet, set to [] to discover
-const SETTING_SUBNET_MASK = []; // Set Subnet Mask to use for BACnet, set to [] to discover
+const SETTING_DEVICE_INSTANCE = 389005; // This BACnet client device instance.
+const SETTING_IP_ADDRESS = []; // Set IP Address to use for BACnet, set to [] to discover... [192,168,2,101]
+const SETTING_SUBNET_MASK = []; // Set Subnet Mask to use for BACnet, set to [] to discover... [255,255,255,0]  
 
 // Constants
-const APPLICATION_VERSION = '0.0.1';
+const APPLICATION_VERSION = '0.0.2';
+const CONNECTION_STRING_SIZE = 6; // The size of the connection string in bytes.
 
 // Globals
-var fifoSendBuffer = new dequeue();
 var fifoRecvBuffer = new dequeue();
 var server = dgram.createSocket('udp4');
+var database = require('./database.js');
 var subnetMask = [];
 var localAddress = [];
-var database = require('./database.js');
 
+
+// Callback Functions
+// ------------------------------------------------------------------------
 // FFI types
 var uint8Ptr = ref.refType('uint8 *');
 
@@ -49,9 +51,14 @@ var FuncPtrCallbackGetSystemTime = ffi.Callback('uint64', [], CallbackGetSystemT
 // Get Property Callback Functions
 var FuncPtrCallbackGetPropertyCharacterString = ffi.Callback('bool', ['uint32', 'uint16', 'uint32', 'uint32', 'char*', 'uint32*', 'uint32', 'uint8', 'bool', 'uint32'], GetPropertyCharacterString);
 
+// Debug 
 var FuncPtrCallbackLogDebugMessage = ffi.Callback('void', ['uint8*', 'uint16', 'uint8'], LogDebugMessage);
 
+
 // Helper Functions
+// ------------------------------------------------------------------------
+
+// CreateStringFromCharPointer converts a char pointer (from the CAS BACnet Stack) into a string useable by NodeJS.
 function CreateStringFromCharPointer(charPointer, length) {
   let messageToRead = ref.reinterpret(charPointer, length, 0);
   let workingString = '';
@@ -60,6 +67,41 @@ function CreateStringFromCharPointer(charPointer, length) {
   }
   return workingString;
 }
+
+
+// Helper function to get a key name from an array by the value.
+function HelperGetKeyByValue(object, value) {
+  // https://www.geeksforgeeks.org/how-to-get-a-key-in-a-javascript-object-by-its-value/
+  return Object.keys(object).find((key) => object[key] === value);
+}
+
+// Helper function to convert a connection string ("192.168.1.101:47808" or "192.168.1.101") into a buffer.
+// That can be used by the CAS BACnet Stack.
+function HelperGetConnectionStringAsBuffer(connectionString) {
+  // Convert the connection string as a text into a buffer that the CAS BACnet Stack expects.
+  // The connection string is in the format of "192.168.1.101:47808" or "192.168.1.101"
+  var newConnectionString = Buffer.allocUnsafe(CONNECTION_STRING_SIZE);
+  var ipAddress = connectionString.substring(0, connectionString.indexOf(':')).split('.').map(Number);
+  var port = parseInt(connectionString.substring(connectionString.indexOf(':') + 1));
+
+  // If the port doesn't exist then set it to the default port.
+  if (isNaN(port)) {
+    port = SETTING_BACNET_PORT;
+  }
+
+  newConnectionString.writeUInt8(ipAddress[0], 0);
+  newConnectionString.writeUInt8(ipAddress[1], 1);
+  newConnectionString.writeUInt8(ipAddress[2], 2);
+  newConnectionString.writeUInt8(ipAddress[3], 3);
+  newConnectionString.writeUInt8(port / 256, 4);
+  newConnectionString.writeUInt8(port % 256, 5);
+
+  // Return the connection string as a buffer.
+  return newConnectionString;
+}
+
+// Callback functions
+// ------------------------------------------------------------------------
 
 // This callback function is used when the CAS BACnet stack wants to send a message out onto the network.
 function CallbackSendMessage(message, messageLength, connectionString, connectionStringLength, networkType, broadcast) {
@@ -72,7 +114,7 @@ function CallbackSendMessage(message, messageLength, connectionString, connectio
     // Use the subnetMask to calculate the broadcast address
     var broadcastAddress = [];
     for (var i = 0; i < 4; i++) {
-      broadcastAddress.push((localAddress[i] & subnetMask[i]) | (~subnetMask[i] & 255));
+      broadcastAddress.push((localAddress[i] & subnetMask[i]) | (~subnetMask[i] & 0xFF));
     }
     ipAddress = broadcastAddress[0] + '.' + broadcastAddress[1] + '.' + broadcastAddress[2] + '.' + broadcastAddress[3];
   } else {
@@ -103,6 +145,7 @@ function CallbackSendMessage(message, messageLength, connectionString, connectio
 
   // Send the message.
   try {
+    // TODO: server.send is async, for now we trigger unelegant error-out if an error occurs when server is trying to send
     server.send(sendBuffer, port, ipAddress, function (error) {
       if (error) {
         logger.error('Error: Could not send message');
@@ -115,7 +158,6 @@ function CallbackSendMessage(message, messageLength, connectionString, connectio
     logger.error('Exception: ' + e.stack);
   }
 
-  // TODO: server.send is async, for now we trigger unelegant error-out if an error occurs when server is trying to send
   return newMessage.length;
 }
 
@@ -126,12 +168,11 @@ function CallbackRecvMessage(message, maxMessageLength, receivedConnectionString
     // There is at lest one message on the buffer.
     var msg = fifoRecvBuffer.shift();
 
-    const recvedMessage = msg[0];
+    const receivedMessage = msg[0];
 
-    logger.debug('<< CallbackRecvMessage Got message. Length: ' + msg[0].length + ', From:' + msg[1] + ', Message: ' + msg[0].toString('hex'));
-
-    if (msg[0].length > maxMessageLength) {
-      logger.error('Error: Message too large to fit into buffer on Recv. Dumping message. msg[0].length=' + msg[0].length + ', maxMessageLength=' + maxMessageLength);
+    logger.debug('<< CallbackRecvMessage Got message. Length: ' + receivedMessage.length + ', From:' + msg[1] + ', Message: ' + receivedMessage.toString('hex'));
+    if (receivedMessage.length > maxMessageLength) {
+      logger.error('Error: Message too large to fit into buffer on Recv. Dumping message. msg[0].length=' + receivedMessage.length + ', maxMessageLength=' + maxMessageLength);
       return 0;
     }
 
@@ -152,21 +193,21 @@ function CallbackRecvMessage(message, maxMessageLength, receivedConnectionString
     newReceivedConnectionString.writeUInt8(receivedPort % 256, 5);
 
     // Connection string length
-    receivedConnectionStringLength.writeUInt8(6, 0);
+    receivedConnectionStringLength.writeUInt8(CONNECTION_STRING_SIZE, 0); // Ensure its null terminated.
 
-    // Recved message
+    // Received message
     // --------------------------------------------------------------------
     // Reinterpret the message parameter with a the max buffer size.
     var newMessage = ref.reinterpret(message, maxMessageLength, 0);
-    for (var offset = 0; offset < recvedMessage.length; offset++) {
-      newMessage.writeUInt8(recvedMessage[offset], offset);
+    for (var offset = 0; offset < receivedMessage.length; offset++) {
+      newMessage.writeUInt8(receivedMessage[offset], offset);
     }
 
     // Pass the recived message to the process function.
     ProcessBACnetMessage(msg[1], newMessage);
 
     // Return the length of the message.
-    return recvedMessage.length;
+    return receivedMessage.length;
   }
   return 0;
 }
@@ -180,33 +221,6 @@ function CallbackGetSystemTime() {
 
 
 
-// Helper function to get a key name from an array by the value.
-function HelperGetKeyByValue(object, value) {
-  // https://www.geeksforgeeks.org/how-to-get-a-key-in-a-javascript-object-by-its-value/
-  return Object.keys(object).find((key) => object[key] === value);
-}
-
-function HelperGetConnectionStringAsBuffer(connectionString) {
-  // Convert the connection string as a text into a buffer that the CAS BACnet Stack expects.
-  // The connection string is in the format of "192.168.1.101:47808" or "192.168.1.101"
-  var newConnectionString = Buffer.allocUnsafe(6);
-  var ipAddress = connectionString.substring(0, connectionString.indexOf(':')).split('.').map(Number);
-  var port = parseInt(connectionString.substring(connectionString.indexOf(':') + 1));
-
-  // If the port doesn't exist then set it to the default port.
-  if (isNaN(port)) {
-    port = SETTING_BACNET_PORT;
-  }
-
-  newConnectionString.writeUInt8(ipAddress[0], 0);
-  newConnectionString.writeUInt8(ipAddress[1], 1);
-  newConnectionString.writeUInt8(ipAddress[2], 2);
-  newConnectionString.writeUInt8(ipAddress[3], 3);
-  newConnectionString.writeUInt8(port / 256, 4);
-  newConnectionString.writeUInt8(port % 256, 5);
-
-  return newConnectionString;
-}
 
 function GetPropertyCharacterString(deviceInstance, objectType, objectInstance, propertyIdentifier, value, valueElementCount, maxElementCount, encodingType, useArrayIndex, propertyArrayIndex) {
   logger.debug('GetPropertyCharacterString - deviceInstance: ' + deviceInstance + ', objectType: ' + objectType + ', objectInstance: ' + objectInstance + ', propertyIdentifier: ' + propertyIdentifier + ', useArrayIndex: ' + useArrayIndex + ', propertyArrayIndex: ' + propertyArrayIndex + ', maxElementCount: ' + maxElementCount + ', encodingType: ' + encodingType);
@@ -223,7 +237,7 @@ function GetPropertyCharacterString(deviceInstance, objectType, objectInstance, 
     // Convert the property to the requested data type and return success.
     charValue = "Example name"
     newValue.write(charValue, 0, 'utf8');
-    valueElementCount.writeInt32LE(charValue.length, 0);
+    valueElementCount.writeInt32LE(charValue.length, 0); // Null terminated string.
     return true;
 
   }
@@ -260,7 +274,8 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
   }
   logger.info(JSON.stringify(messageAsJSON));
 
-  // In this example we are only processing two types of messages: I-am, and read-property-multiple.
+  // In this example we are only processing two types of messages: 
+  // I-am, and read-property-multiple.
 
   // All messages will have a NPDU, section that has network information.
   var destinationNetwork = messageAsJSON?.BACnetPacket?.NPDU?.DestinationNetwork;
@@ -268,8 +283,10 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
 
   // # I-Am
   // An I-Am message is sent by a BACnet device on response from a Who-Is message.
+  // The I-Am are used for discovery of a BACnet device.
   // Use JSON Path to extract the data from the message. BACnetPacket/UnconfirmedRequestPDU/_serviceChoice = "iAm"
   //
+  // Example message:
   // {"BACnetPacket":{"_networkType":"IP","BVLL":{"_function":"originalBroadcastNPDU"},
   // "NPDU":{"_control":"0x20","_version":"1","DestinationNetwork":"65535","DestinationAddress":{"_length":"0"},"HopCount":"255"},
   // "UnconfirmedRequestPDU":{"_serviceChoice":"iAm","IAmRequest":{"IAmDeviceIdentifier":{"_text":"device, 389001","_datatype":"12","_objectInstance":"389001","_objectType":"8"},
@@ -304,11 +321,11 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
 
     logger.info("originalInvokeId: " + originalInvokeId + ", originalRequest: " + JSON.stringify(originalRequest));
 
-    // For each value in the ComplexACKPDU.ReadPropertyMultipleACK.ListOfReadAccessResults.ReadAccessResult.ListOfResults.ReadResult
-    // List the PropertyIdentifier._text and the PropertyValue.*._text
+    // Loop thought the results adding them to the database one at a time.
     var ReadAccessResults = messageAsJSON?.BACnetPacket?.ComplexACKPDU?.ReadPropertyMultipleACK?.ListOfReadAccessResults?.ReadAccessResult?.ListOfResults?.ReadResult;
     logger.info("Found ReadAccessResults: " + ReadAccessResults.length);
     for (var i = 0; i < ReadAccessResults.length; i++) {
+
       var PropertyIdentifier = ReadAccessResults[i]?.PropertyIdentifier?._text;
       var PropertyValue = ReadAccessResults[i]?.PropertyValue;
 
@@ -323,7 +340,7 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
         }
       }
 
-      logger.info('ReadPropertyMultiple message. originalInvokeId: ' + originalInvokeId + ', Device Instance: ' + originalRequest.deviceInstance + ', PropertyIdentifier: ' + PropertyIdentifier + ', PropertyValue: ' + PropertyValueText );
+      logger.info('ReadPropertyMultiple message. originalInvokeId: ' + originalInvokeId + ', Device Instance: ' + originalRequest.deviceInstance + ', PropertyIdentifier: ' + PropertyIdentifier + ', PropertyValue: ' + PropertyValueText);
       database.AddObjectProperty(originalRequest.deviceInstance, originalRequest.objectType, originalRequest.objectInstance, PropertyIdentifier, PropertyValueText, originalRequest.destinationNetwork, originalRequest.destinationAddress, connectionString);
     }
   }
@@ -359,7 +376,6 @@ function main() {
   logger.info('BACnet device instance: ' + SETTING_DEVICE_INSTANCE);
   CASBACnetStack.stack.BACnetStack_AddDevice(SETTING_DEVICE_INSTANCE);
 
-
   // Set up the BACnet services
   // ------------------------------------------------------------------------
   // By default only the required servics are enabled.
@@ -391,12 +407,13 @@ function main() {
     const address = server.address();
     logger.info(`UDP.Server listening ${address.address}:${address.port}`);
   });
+
   server.on('exit', () => {
     logger.info(`UDP.Server Exit`);
-    FuncPtrCallbackSendMessage;
-    FuncPtrCallbackReceiveMessage;
-    FuncPtrCallbackGetSystemTime;
   });
+
+  // Get the system network information
+  // ------------------------------------------------------------------------
 
   // Get netmask and ip address if not set
   var localAddressString = '';
@@ -404,7 +421,7 @@ function main() {
     const networkInterfaces = os.networkInterfaces();
     logger.info('Found the following networks: \n' + JSON.stringify(networkInterfaces, null, 2));
 
-    // Find the FIRST network that satifies the conditions.
+    // Find the FIRST network that satisfies the conditions.
     var foundNetwork = false;
     for (localNetwork in networkInterfaces) {
       networkInterfaces[localNetwork].forEach(function (adapter) {
@@ -415,8 +432,6 @@ function main() {
         }
         localAddress = adapter.address.split('.').map(Number);
         subnetMask = adapter.netmask.split('.').map(Number);
-
-        logger.info('Network: [' + localNetwork + '], Adapter: ' + adapter.address + ', Netmask: ' + adapter.netmask);
         foundNetwork = true;
         return;
       });
@@ -429,7 +444,7 @@ function main() {
   logger.info('IP Address: ' + localAddress + ', SubnetMask: ' + subnetMask);
   localAddressString = localAddress[0] + '.' + localAddress[1] + '.' + localAddress[2] + '.' + localAddress[3];
 
-  // Bind to the UDP port
+  // Bind to the specific adapter and BACnet UDP port
   server.bind({
     address: localAddressString,
     port: SETTING_BACNET_PORT
@@ -441,6 +456,9 @@ function main() {
   logger.info('Starting main program loop... ');
 
   // Process the BACnet stack
+  // The tick function must run every 100ms or so. 
+  // It will process the BACnet stack and send out any messages.
+  // Run any timers, do any retransmits, etc.
   setInterval(() => {
     CASBACnetStack.stack.BACnetStack_Tick();
     intervalCount += 1;
@@ -448,25 +466,25 @@ function main() {
 
 
   // Send a WhoIs message
+  // ------------------------------------------------------------------------
   setInterval(() => {
     logger.info('Sending WhoIs... ');
 
-    var newConnectionString = Buffer.alloc(6);
+    var newConnectionString = Buffer.allocUnsafe(CONNECTION_STRING_SIZE);
+    // The IP address of the connection string doesn't matter as it will be replaced by the broadcast address.
     // Update the 4 and 5th bytes with the port number.
     newConnectionString[4] = SETTING_BACNET_PORT / 256;
     newConnectionString[5] = SETTING_BACNET_PORT % 256;
 
     try {
-      CASBACnetStack.stack.BACnetStack_SendWhoIs(newConnectionString, 6, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, true, 0, null, 0);
+      CASBACnetStack.stack.BACnetStack_SendWhoIs(newConnectionString, CONNECTION_STRING_SIZE, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, true, 0, null, 0);
     } catch (e) {
-      logger.error('Exception: ' + e.stack);
+      logger.error('Send Who-is Exception: ' + e.stack);
     }
-
-    // release the buffer
-    newConnectionString = null;
   }, 1000 * 3);
 
   // Send the ReadPropertyMultiple message
+  // ------------------------------------------------------------------------
   setInterval(() => {
     // For each device in the database. The device key is (deviceInstance)
     Object.keys(database.database.devices).forEach(function (deviceIdentifier) {
@@ -476,24 +494,20 @@ function main() {
       var newConnectionString = HelperGetConnectionStringAsBuffer(deviceObject.connectionString);
 
       // Build the request
+      // Note: We are hard coding the object type and property identifier for this example.
+      //       In your application you may want to read the object type and property identifier from a database.
       var objectType = CASBACnetStack.OBJECT_TYPE.DEVICE;
       var propertyIdentifier = CASBACnetStack.PROPERTY_IDENTIFIER.ALL;
       CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, propertyIdentifier, false, 0);
 
       // Send the request
-
       var destinationNetwork = 0; // deviceObject.destinationNetwork;
-
       var destinationAddressLength = 0;
       var destinationAddress = Buffer.allocUnsafe(1); //  deviceObject.destinationAddress;
-
-      var sentInvokeIdAsBuffer = Buffer.allocUnsafe(1);
-
-      // DllExport bool BACnetStack_SendReadProperty(uint8_t* sentInvokeId, const uint8_t* connectionString, const uint8_t connectionStringLength, const uint8_t networkType, const uint16_t destinationNetwork, const uint8_t* destinationAddress, const uint8_t destinationAddressLength);
-      CASBACnetStack.stack.BACnetStack_SendReadProperty(sentInvokeIdAsBuffer, newConnectionString, 6, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, destinationNetwork, destinationAddress, destinationAddressLength);
+      var sentInvokeIdAsBuffer = Buffer.allocUnsafe(1); // The invoke id is returned by the CAS BACnet Stack after the message is sent.
+      CASBACnetStack.stack.BACnetStack_SendReadProperty(sentInvokeIdAsBuffer, newConnectionString, CONNECTION_STRING_SIZE, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, destinationNetwork, destinationAddress, destinationAddressLength);
 
       logger.info('Sent ReadPropertyMultiple to device: ' + deviceIdentifier + ", connectionString: " + deviceObject.connectionString + ", sentInvokeId: " + sentInvokeIdAsBuffer.readUint8());
-
       database.AddNewRequest(deviceObject.connectionString, sentInvokeIdAsBuffer.readUint8(), destinationNetwork, destinationAddress, deviceIdentifier, objectType, deviceIdentifier);
     });
   }, 1000 * 1);
@@ -501,8 +515,8 @@ function main() {
 
 
   // Print database
+  // ------------------------------------------------------------------------
   setInterval(() => {
-    // Send a WhoIs message
     logger.info(database.Print());
   }, 1000 * 3);
 

@@ -1,9 +1,20 @@
 /** 
  * Logging for debugging and errors
+ * 
+ * Last updated: 2023-July-11
+ * Author: Steven Smethurst
+ * 
+ * Example use:
+ * ```js
+ *    const loggerObj = require('./logging');
+ *    const logger = loggerObj.child({ label: 'Example' });
+ *    logger.error('An error message');
+ *    logger.debug('An debug message');
+ *    logger.info("An info message");
+ * ```
  */
 
 const winston = require('winston');
-
 var options = {
     file: {
         level: 'debug',

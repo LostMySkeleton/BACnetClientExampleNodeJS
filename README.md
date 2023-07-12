@@ -2,11 +2,13 @@
 
 A basic BACnet IP Client example written in NodeJS using the [CAS BACnet Stack](https://store.chipkin.com/services/stacks/bacnet-stack).
 
-In this example, the application will do the following every 30 seconds;
+In this example, the application will
 
 - Send a global who-is message. Record the responding devices in a database
 - For each device in the database, it will send a ReadPropertyMuliple-All message. Record the responses in a database
 - Print the database to the console
+
+It is recommended that you use the [CAS BACnet Stack Server example](https://github.com/chipkin/BACnetServerExampleCPP/releases) as a test BACnet Server device with this client.
 
 ## Installation
 

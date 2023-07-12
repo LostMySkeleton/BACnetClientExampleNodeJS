@@ -25,8 +25,8 @@ module.exports = {
       ret += '  Device: ' + device + '\n';
       ret += '    Connection String: ' + this.database.devices[device].connectionString + '\n';
       ret += '    Vendor ID: ' + this.database.devices[device].vendorId + '\n';
-      ret += '    Destination Network: ' + this.database.devices[device].destinationNetwork + '\n';
-      ret += '    Destination Address: ' + this.database.devices[device].destinationAddress + '\n';
+      ret += '    Source Network: ' + this.database.devices[device].sourceNetwork + '\n';
+      ret += '    Source Address: ' + this.database.devices[device].sourceAddress + '\n';
     };
     ret + "\n";
 
@@ -48,24 +48,28 @@ module.exports = {
 
   // When a new device is found, add it to the database
   // If the device is already in the database, update it with the new information
-  AddDevice(deviceInstance, vendorId, destinationNetwork, destinationAddress, connectionString) {
+  AddDevice(deviceInstance, vendorId, sourceNetwork, sourceAddress, connectionString) {
     // If the device is not in the database, add it
     if (this.database.devices[deviceInstance] == null) {
       this.database.devices[deviceInstance] = {};
     };
 
+    if (sourceNetwork == null || sourceNetwork == undefined || sourceNetwork == '') {
+      sourceNetwork = 0; // local 
+      sourceAddress = '';
+    }
+
     // Update the database 
     this.database.devices[deviceInstance].connectionString = connectionString;
     this.database.devices[deviceInstance].vendorId = vendorId;
-    this.database.devices[deviceInstance].destinationNetwork = destinationNetwork;
-    this.database.devices[deviceInstance].destinationAddress = destinationAddress;
+    this.database.devices[deviceInstance].sourceNetwork = sourceNetwork;
+    this.database.devices[deviceInstance].sourceAddress = sourceAddress;
   },
 
   // Update the database with a new property
   // A key is created from the connectionString, device instance, object type, object instance, and property identifier
-  AddObjectProperty(deviceInstance, objectType, objectInstance, propertyIdentifier, propertyValueText, destinationNetwork, destinationAddress, connectionString) {
-
-    var networkKey = connectionString + seperator + destinationNetwork + seperator + deviceInstance + seperator + objectType + seperator + objectInstance + seperator + propertyIdentifier;
+  AddObjectProperty(deviceInstance, objectType, objectInstance, propertyIdentifier, propertyValueText, sourceNetwork, sourceAddress, connectionString) {
+    var networkKey = connectionString + seperator + sourceNetwork + seperator + sourceAddress + seperator + deviceInstance + seperator + objectType + seperator + objectInstance + seperator + propertyIdentifier;
     this.database.properties[networkKey] = propertyValueText;
   },
 
@@ -85,14 +89,23 @@ module.exports = {
   },
 
   // Add a new request to the database
-  AddNewRequest(connectionString, originalInvokeId, destinationNetwork, destinationAddress, deviceInstance, objectType, objectInstance) {
+  AddNewRequest(connectionString, originalInvokeId, sourceNetwork, sourceAddress, deviceInstance, objectType, objectInstance) {
     // Use the connection string and original invoke id as a key to the request
     var key = connectionString + seperator + originalInvokeId;
+
+    if (sourceNetwork == null || sourceNetwork == undefined || sourceNetwork == '') {
+      sourceNetwork = 0; // local 
+      sourceAddress = 0;
+    }
+    if (sourceNetwork != 0) {
+      sourceAddress = sourceAddress.toString('hex');
+    }
+
     this.database.requests[key] = {
       connectionString,
       originalInvokeId,
-      destinationNetwork,
-      destinationAddress,
+      sourceNetwork,
+      sourceAddress,
       deviceInstance,
       objectType,
       objectInstance

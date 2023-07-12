@@ -24,14 +24,19 @@ const SETTING_DEVICE_INSTANCE = 389005; // This BACnet client device instance.
 const SETTING_IP_ADDRESS = []; // Set IP Address to use for BACnet, set to [] to discover... [192,168,2,101]
 const SETTING_SUBNET_MASK = []; // Set Subnet Mask to use for BACnet, set to [] to discover... [255,255,255,0]  
 
+const SETTING_TIMER_DISCOVERY_SECONDS = 30 ;
+const SETTING_TIMER_READ_PROPERTY_SECONDS = 15 ;
+const SETTING_TIMER_PRINT_DATABASE_SECONDS = 3 ; 
+
 // Constants
-const APPLICATION_VERSION = '0.0.2';
+const APPLICATION_VERSION = '0.0.3';
 const CONNECTION_STRING_SIZE = 6; // The size of the connection string in bytes.
 
 // Globals
 var fifoRecvBuffer = new dequeue();
 var server = dgram.createSocket('udp4');
 var database = require('./database.js');
+const { setTimeout } = require('timers/promises');
 var subnetMask = [];
 var localAddress = [];
 
@@ -100,6 +105,7 @@ function HelperGetConnectionStringAsBuffer(connectionString) {
   return newConnectionString;
 }
 
+
 // Callback functions
 // ------------------------------------------------------------------------
 
@@ -128,7 +134,7 @@ function CallbackSendMessage(message, messageLength, connectionString, connectio
     return 0;
   }
 
-  logger.debug('>> CallbackSendMessage. messageLength: ' + messageLength + ", broadcast: " + broadcast + ", networkType: " + networkType + ", ipAddress: " + ipAddress + ", port: " + port);
+  logger.debug('>> CallbackSendMessage. messageLength: ' + messageLength + ", broadcast: " + broadcast + ", networkType: " + networkType + ", ipAddress: " + ipAddress + ", port: " + port + ', message: ' + message.toString('hex'));
 
   // Check to make sure that we are currently connected to the udp port before sending a message.
   if (server.address() === null) {
@@ -278,8 +284,13 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
   // I-am, and read-property-multiple.
 
   // All messages will have a NPDU, section that has network information.
-  var destinationNetwork = messageAsJSON?.BACnetPacket?.NPDU?.DestinationNetwork;
-  var destinationAddress = messageAsJSON?.BACnetPacket?.NPDU?.DestinationAddress?._length;
+  var sourceNetwork = messageAsJSON?.BACnetPacket?.NPDU?.SourceNetwork;
+  var sourceAddress = '';
+  if (messageAsJSON?.BACnetPacket?.NPDU?.SourceAddress?._length > 0) {
+    // This message is for a different network.
+    // The sourceAddress is in this format 0x0493E9
+    sourceAddress = messageAsJSON?.BACnetPacket?.NPDU?.SourceAddress?._text.split('x')[1];
+  }
 
   // # I-Am
   // An I-Am message is sent by a BACnet device on response from a Who-Is message.
@@ -288,10 +299,13 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
   //
   // Example message:
   // {"BACnetPacket":{"_networkType":"IP","BVLL":{"_function":"originalBroadcastNPDU"},
-  // "NPDU":{"_control":"0x20","_version":"1","DestinationNetwork":"65535","DestinationAddress":{"_length":"0"},"HopCount":"255"},
-  // "UnconfirmedRequestPDU":{"_serviceChoice":"iAm","IAmRequest":{"IAmDeviceIdentifier":{"_text":"device, 389001","_datatype":"12","_objectInstance":"389001","_objectType":"8"},
-  // "MaxAPDULengthAccepted":{"_text":"1458","_datatype":"2","_value":"1458"},"SegmentationSupported":{"_text":"noSegmentation","_datatype":"9","_value":"3"},
-  // "VendorId":{"_text":"37","_datatype":"2","_value":"37"}}}}}
+  // "NPDU":{"_control":"0x28","_version":"1","DestinationNetwork":"65535","DestinationAddress":{"_length":"0"},
+  // "HopCount":"254","SourceNetwork":"3000","SourceAddress":{"_text":"0x0493E9","_length":"3"}},
+  // "UnconfirmedRequestPDU":{"_serviceChoice":"iAm","IAmRequest":{"IAmDeviceIdentifier":{"_text":"device, 300009",
+  // "_datatype":"12","_objectInstance":"300009","_objectType":"8"},"MaxAPDULengthAccepted":{"_text":"1476","_datatype":"2",
+  // "_value":"1476"},"SegmentationSupported":{"_text":"noSegmentation","_datatype":"9","_value":"3"},"VendorId":{"_text":"389",
+  // "_datatype":"2","_value":"389"}}}}}
+  // 
   // 
   var serviceChoice = messageAsJSON?.BACnetPacket?.UnconfirmedRequestPDU?._serviceChoice;
   if (serviceChoice === "iAm") {
@@ -300,15 +314,14 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
     var vendorId = messageAsJSON?.BACnetPacket?.UnconfirmedRequestPDU?.IAmRequest?.VendorId?._value;
 
     // Print the information to the console for debugging.
-    logger.info('I-Am message. Device Instance: ' + deviceInstance + ', VendorId: ' + vendorId + ', DestinationNetwork: ' + destinationNetwork + ', DestinationAddress: ' + destinationAddress);
-    database.AddDevice(deviceInstance, vendorId, destinationNetwork, destinationAddress, connectionString);
+    logger.info('I-Am message. Device Instance: ' + deviceInstance + ', VendorId: ' + vendorId + ', sourceNetwork: ' + sourceNetwork + ', sourceAddress: ' + sourceAddress);
+    database.AddDevice(deviceInstance, vendorId, sourceNetwork, sourceAddress, connectionString);
     return; // We are done processing this message.
   }
 
   // # Read-Property-Multiple
   // A Read-Property-Multiple message is sent by a BACnet device on response from a Read-Property-Multiple message.
   var serviceChoice = messageAsJSON?.BACnetPacket?.ComplexACKPDU?._serviceChoice;
-  logger.info('serviceChoice: ' + serviceChoice);
   if (serviceChoice === "readPropertyMultiple") {
 
     // Get the _originalInvokeId from the message to match up to the request.
@@ -326,23 +339,24 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
     logger.info("Found ReadAccessResults: " + ReadAccessResults.length);
     for (var i = 0; i < ReadAccessResults.length; i++) {
 
-      var PropertyIdentifier = ReadAccessResults[i]?.PropertyIdentifier?._text;
-      var PropertyValue = ReadAccessResults[i]?.PropertyValue;
+      var propertyIdentifier = ReadAccessResults[i]?.PropertyIdentifier?._text;
+      var propertyValue = ReadAccessResults[i]?.PropertyValue;
 
       // PropertyValue.UnsignedInteger._text || PropertyValue.CharacterString._text etc...
       // The middle is the data type and should be a whild card.
 
       // Extract the _text from the PropertyValue
-      var PropertyValueText = '';
-      for (var key in PropertyValue) {
+      var propertyValueText = '';
+      for (var key in propertyValue) {
         if (key !== '_text') {
-          PropertyValueText = PropertyValue[key]._text;
+          propertyValueText = propertyValue[key]._text;
         }
       }
 
-      logger.info('ReadPropertyMultiple message. originalInvokeId: ' + originalInvokeId + ', Device Instance: ' + originalRequest.deviceInstance + ', PropertyIdentifier: ' + PropertyIdentifier + ', PropertyValue: ' + PropertyValueText);
-      database.AddObjectProperty(originalRequest.deviceInstance, originalRequest.objectType, originalRequest.objectInstance, PropertyIdentifier, PropertyValueText, originalRequest.destinationNetwork, originalRequest.destinationAddress, connectionString);
+      logger.info('ReadPropertyMultiple message. originalInvokeId: ' + originalInvokeId + ', Device Instance: ' + originalRequest.deviceInstance + ', PropertyIdentifier: ' + propertyIdentifier + ', PropertyValue: ' + propertyValueText);
+      database.AddObjectProperty(originalRequest.deviceInstance, originalRequest.objectType, originalRequest.objectInstance, propertyIdentifier, propertyValueText, originalRequest.sourceNetwork, originalRequest.sourceAddress, connectionString);
     }
+    return;
   }
 }
 
@@ -415,6 +429,7 @@ function main() {
   server.on('listening', () => {
     const address = server.address();
     logger.info(`UDP.Server listening ${address.address}:${address.port}`);
+    DoDiscovery(); // Now that the UDP port is open, we can send a WhoIs message.
   });
 
   server.on('exit', () => {
@@ -468,16 +483,22 @@ function main() {
   // The tick function must run every 100ms or so. 
   // It will process the BACnet stack and send out any messages.
   // Run any timers, do any retransmits, etc.
-  setInterval(() => {
+  function BACnetStackLoop() {
     while (CASBACnetStack.stack.BACnetStack_Tick()) {
       intervalCount += 1;
     }
-  }, 100);
+  }
+  setInterval(BACnetStackLoop, 100); // Run every 100ms
 
+  // Print database
+  // ------------------------------------------------------------------------
+  setInterval(() => {
+    logger.info(database.Print());
+  }, 1000 * SETTING_TIMER_PRINT_DATABASE_SECONDS);
 
   // Send a WhoIs message
   // ------------------------------------------------------------------------
-  setInterval(() => {
+  function DoDiscovery() {
     logger.info('Sending WhoIs... ');
 
     var newConnectionString = Buffer.allocUnsafe(CONNECTION_STRING_SIZE);
@@ -487,15 +508,25 @@ function main() {
     newConnectionString[5] = SETTING_BACNET_PORT % 256;
 
     try {
-      CASBACnetStack.stack.BACnetStack_SendWhoIs(newConnectionString, CONNECTION_STRING_SIZE, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, true, 0, null, 0);
+      // Note: Only one of these WhoIs should be enabled at a time.
+
+      // This is a unlimited Who-Is. All devices that recive this message will respond with an I-Am message.
+      // CASBACnetStack.stack.BACnetStack_SendWhoIs(newConnectionString, CONNECTION_STRING_SIZE, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, true, 65535, null, 0);
+
+      // This is a limited Who-Iss. Only devices within the range will respond with an I-Am message.
+      const WHO_IS_RANGE_LOW = 8800;
+      const WHO_IS_RANGE_HIGH = 8810;
+      CASBACnetStack.stack.BACnetStack_SendWhoIsWithLimits(WHO_IS_RANGE_LOW, WHO_IS_RANGE_HIGH, newConnectionString, CONNECTION_STRING_SIZE, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, true, 65535, null, 0);
+
     } catch (e) {
       logger.error('Send Who-is Exception: ' + e.stack);
-    }
-  }, 1000 * 3);
+    }    
+  }
+  setInterval(DoDiscovery, 1000 * SETTING_TIMER_DISCOVERY_SECONDS );
 
   // Send the ReadPropertyMultiple message
   // ------------------------------------------------------------------------
-  setInterval(() => {
+  function DoReadProperty() {
     // For each device in the database. The device key is (deviceInstance)
     Object.keys(database.database.devices).forEach(function (deviceIdentifier) {
       var deviceObject = database.database.devices[deviceIdentifier];
@@ -511,26 +542,23 @@ function main() {
       CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, propertyIdentifier, false, 0);
 
       // Send the request
-      var destinationNetwork = 0; // deviceObject.destinationNetwork;
+      var destinationNetwork = deviceObject.sourceNetwork;
       var destinationAddressLength = 0;
-      var destinationAddress = Buffer.allocUnsafe(1); //  deviceObject.destinationAddress;
+      var destinationAddress = Buffer.allocUnsafe(1);
+      if (destinationNetwork != 0) {
+        // This device is on a different network.
+        // Convert the destinationAddress as hex to a buffer.
+        destinationAddress = Buffer.from(deviceObject.sourceAddress, 'hex');
+        destinationAddressLength = destinationAddress.length;
+      }
       var sentInvokeIdAsBuffer = Buffer.allocUnsafe(1); // The invoke id is returned by the CAS BACnet Stack after the message is sent.
       CASBACnetStack.stack.BACnetStack_SendReadProperty(sentInvokeIdAsBuffer, newConnectionString, CONNECTION_STRING_SIZE, CASBACnetStack.CONSTANTS.NETWORK_TYPE_BACNET_IP, destinationNetwork, destinationAddress, destinationAddressLength);
 
       logger.info('Sent ReadPropertyMultiple to device: ' + deviceIdentifier + ", connectionString: " + deviceObject.connectionString + ", sentInvokeId: " + sentInvokeIdAsBuffer.readUint8());
       database.AddNewRequest(deviceObject.connectionString, sentInvokeIdAsBuffer.readUint8(), destinationNetwork, destinationAddress, deviceIdentifier, objectType, deviceIdentifier);
     });
-  }, 1000 * 1);
-
-
-
-  // Print database
-  // ------------------------------------------------------------------------
-  setInterval(() => {
-    logger.info(database.Print());
-  }, 1000 * 3);
-
-
+  }
+  setInterval(DoReadProperty, 1000 * SETTING_TIMER_READ_PROPERTY_SECONDS );
 }
 
 // Start the application.

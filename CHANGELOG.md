@@ -4,6 +4,7 @@
 
 - Added example of individually listing the property identifiers for the read property multiple requests
 - Added better error message for AbortPDU - segmentationNotSupported
+- Added a error message if the CAS BACnet Stack DLL is not found in the CASBACnetStackAdapter.js
 
 ## 0.0.3 (2023-July-12)
 

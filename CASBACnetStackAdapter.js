@@ -1,5 +1,6 @@
 var ffi = require('ffi-napi'); // DLL interface 
 
+const CASBACNETSTACK_NODEJS_ADAPTER_VERSION = '1.1.2'; 
 CASBACNETSTACK_LIBARY_ARCHITECTURE = 'x64'; // x64 or x86 
 CASBACNETSTACK_LIBARY_TYPE = 'Debug'; // Release or Debug
 CASBACNETSTACK_LIBARY_PATH = './bin/';
@@ -12,11 +13,18 @@ if (process.platform == "win32") {
     CASBACNETSTACK_LIBARY_FILENAME = CASBACNETSTACK_LIBARY_PATH + 'libCASBACnetStack_' + CASBACNETSTACK_LIBARY_ARCHITECTURE + '_' + CASBACNETSTACK_LIBARY_TYPE
 }
 
+// Check to make sure that the shared libary exists.
+const fs = require('fs');
+if (!fs.existsSync(CASBACNETSTACK_LIBARY_FILENAME)) {
+    console.log("ERROR: Unable to find the CAS BACnet Stack shared libary: " + CASBACNETSTACK_LIBARY_FILENAME);
+    process.exit(1);
+}
+
 // console.log("CASBACNETSTACK_LIBARY_FILENAME: " + CASBACNETSTACK_LIBARY_FILENAME);
 
 module.exports = {
     GetAdapterVersion: function GetAdapterVersion() {
-        return "1.1.1.0";
+        return CASBACNETSTACK_NODEJS_ADAPTER_VERSION;
     },
     GetLibaryPath: function GetLibaryPath() {
         return (CASBACNETSTACK_LIBARY_FILENAME);

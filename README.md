@@ -30,7 +30,6 @@ const SETTING_SUBNET_MASK = [];     // Set Subnet Mask to use for BACnet (i.e. [
 
 ```bash
 
-sudo apt install build-essential
 npm install 
 npm run start
 ```

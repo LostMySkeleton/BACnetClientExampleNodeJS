@@ -73,6 +73,8 @@ module.exports = {
     this.database.properties[networkKey] = propertyValueText;
   },
 
+
+
   // Find the request in the database and return it
   // If deleteRequest is true, delete the request from the database
   FindOriginalRequest(connectionString, originalInvokeId, deleteRequest) {
@@ -87,6 +89,11 @@ module.exports = {
 
     return request;
   },
+
+  // Find the request in the database and removes it
+  RemoveRequest(connectionString, originalInvokeId) {
+    FindOriginalRequest(connectionString, originalInvokeId, true);
+  },  
 
   // Add a new request to the database
   AddNewRequest(connectionString, originalInvokeId, sourceNetwork, sourceAddress, deviceInstance, objectType, objectInstance) {

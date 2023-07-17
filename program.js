@@ -24,12 +24,12 @@ const SETTING_DEVICE_INSTANCE = 389005; // This BACnet client device instance.
 const SETTING_IP_ADDRESS = []; // Set IP Address to use for BACnet, set to [] to discover... [192,168,2,101]
 const SETTING_SUBNET_MASK = []; // Set Subnet Mask to use for BACnet, set to [] to discover... [255,255,255,0]  
 
-const SETTING_TIMER_DISCOVERY_SECONDS = 30 ;
-const SETTING_TIMER_READ_PROPERTY_SECONDS = 15 ;
-const SETTING_TIMER_PRINT_DATABASE_SECONDS = 3 ; 
+const SETTING_TIMER_DISCOVERY_SECONDS = 30;
+const SETTING_TIMER_READ_PROPERTY_SECONDS = 15;
+const SETTING_TIMER_PRINT_DATABASE_SECONDS = 3;
 
 // Constants
-const APPLICATION_VERSION = '0.0.3';
+const APPLICATION_VERSION = '0.0.4';
 const CONNECTION_STRING_SIZE = 6; // The size of the connection string in bytes.
 
 // Globals
@@ -358,6 +358,24 @@ function ProcessBACnetMessage(connectionString, BACnetMessageAsBuffer) {
     }
     return;
   }
+
+  // Catch and produce a better error message for AbortPDU - segmentationNotSupported
+  // {"BACnetPacket":{"_networkType":"IP","BVLL":{"_function":"originalUnicastNPDU"},"NPDU":{"_control":"0x00","_version":"1"},
+  // "AbortPDU":{"_abortReason":"segmentationNotSupported","_originalInvokeId":"180","_server":"1"}}}
+  var serviceChoice = messageAsJSON?.BACnetPacket?.AbortPDU?._abortReason;
+  if (serviceChoice === "segmentationNotSupported") {
+    var _originalInvokeId = messageAsJSON?.BACnetPacket?.AbortPDU?._originalInvokeId;
+    logger.error('AbortPDU - segmentationNotSupported. The response to this request is larger then the max APDU size. Reduce the size of the request to include fewer objects or properties. _originalInvokeId: ' + _originalInvokeId);
+
+    database.RemoveRequest(connectionString, _originalInvokeId);
+    return;
+  }
+
+
+
+
+
+
 }
 
 function main() {
@@ -520,9 +538,9 @@ function main() {
 
     } catch (e) {
       logger.error('Send Who-is Exception: ' + e.stack);
-    }    
+    }
   }
-  setInterval(DoDiscovery, 1000 * SETTING_TIMER_DISCOVERY_SECONDS );
+  setInterval(DoDiscovery, 1000 * SETTING_TIMER_DISCOVERY_SECONDS);
 
   // Send the ReadPropertyMultiple message
   // ------------------------------------------------------------------------
@@ -538,9 +556,22 @@ function main() {
       // Note: We are hard coding the object type and property identifier for this example.
       //       In your application you may want to read the object type and property identifier from a database.
       var objectType = CASBACnetStack.OBJECT_TYPE.DEVICE;
-      var propertyIdentifier = CASBACnetStack.PROPERTY_IDENTIFIER.ALL;
-      CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, propertyIdentifier, false, 0);
 
+      const USE_READ_PROPERTY_MULTIPLE_ALL = true;
+      if (USE_READ_PROPERTY_MULTIPLE_ALL) {
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.ALL, false, 0);
+      } else {
+        // If the downstream device has too many objects or properties then the response will be segmented.
+        // Instead you could use the ReadPropertyMultiple service with fewer objects or properties.
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.OBJECT_NAME, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.VENDOR_NAME, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.VENDOR_IDENTIFIER, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.MODEL_NAME, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.FIRMWAREREVISION, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.APPLICATIONSOFTWAREVERSION, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.PROTOCOLREVISION, false, 0);
+        CASBACnetStack.stack.BACnetStack_BuildReadProperty(objectType, deviceIdentifier, CASBACnetStack.PROPERTY_IDENTIFIER.PROTOCOLSERVICESSUPPORTED, false, 0);
+      }
       // Send the request
       var destinationNetwork = deviceObject.sourceNetwork;
       var destinationAddressLength = 0;
@@ -558,7 +589,7 @@ function main() {
       database.AddNewRequest(deviceObject.connectionString, sentInvokeIdAsBuffer.readUint8(), destinationNetwork, destinationAddress, deviceIdentifier, objectType, deviceIdentifier);
     });
   }
-  setInterval(DoReadProperty, 1000 * SETTING_TIMER_READ_PROPERTY_SECONDS );
+  setInterval(DoReadProperty, 1000 * SETTING_TIMER_READ_PROPERTY_SECONDS);
 }
 
 // Start the application.
